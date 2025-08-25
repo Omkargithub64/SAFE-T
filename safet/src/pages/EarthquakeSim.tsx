@@ -18,6 +18,7 @@ type DebrisState = {
 };
 
 const collapsingNow = new Set<string>();
+
 function computeDamageAreasFromBuildings(
     buildings: (BuildingData & { damageRadiusSqM: number })[]
 ) {
@@ -228,49 +229,63 @@ export default function EarthquakeSim() {
 
     const damageAreas = useMemo(() => computeDamageAreasFromBuildings(buildings), [buildings]);
 
-    // Grid/matrix version of damage areas (0 = damaged, 1 = safe)
-    const damageMatrix = useMemo(() => {
-        const gridSize = 50; // 50x50 matrix
-        const groundWidth = 100; // world units X
-        const groundHeight = 100; // world units Z
+    type Polygon = [number, number][]; // 2D polygon (x,z)
 
-        const matrix = [];
-        const cellWidth = groundWidth / gridSize;
-        const cellHeight = groundHeight / gridSize;
+    function damageAreaToPolygon(area: { center: [number, number, number]; size: [number, number] }): Polygon {
+        const [cx, , cz] = area.center;
+        const [w, d] = area.size;
 
-        for (let row = 0; row < gridSize; row++) {
-            const rowArray = [];
-            for (let col = 0; col < gridSize; col++) {
-                const x = -groundWidth / 2 + col * cellWidth + cellWidth / 2;
-                const z = -groundHeight / 2 + row * cellHeight + cellHeight / 2;
+        return [
+            [cx - w / 2, cz - d / 2], // bottom-left
+            [cx + w / 2, cz - d / 2], // bottom-right
+            [cx + w / 2, cz + d / 2], // top-right
+            [cx - w / 2, cz + d / 2], // top-left
+        ];
+    }
 
-                const isDamaged = damageAreas.some(area => {
-                    const [centerX, , centerZ] = area.center;
-                    const [sizeX, sizeZ] = area.size;
-                    return (
-                        x >= centerX - sizeX / 2 &&
-                        x <= centerX + sizeX / 2 &&
-                        z >= centerZ - sizeZ / 2 &&
-                        z <= centerZ + sizeZ / 2
-                    );
-                });
+    const polygons = damageAreas.map(damageAreaToPolygon);
 
-                rowArray.push(isDamaged ? 0 : 1);
-            }
-            matrix.push(rowArray);
-        }
-        return matrix;
-    }, [damageAreas]);
 
-    function saveMatrixToFile() {
-        const blob = new Blob([JSON.stringify(damageMatrix)], { type: "application/json" });
+    function savePolygons(polygons: [number, number][][], filename = "polygons.json") {
+        const blob = new Blob([JSON.stringify(polygons, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
+
         const a = document.createElement("a");
         a.href = url;
-        a.download = "damageMatrix.json";
+        a.download = filename;
         a.click();
+
         URL.revokeObjectURL(url);
     }
+
+    function getPolygonsBounds(polygons: Polygon[]): { minX: number; maxX: number; minZ: number; maxZ: number } {
+        let minX = Infinity,
+            maxX = -Infinity,
+            minZ = Infinity,
+            maxZ = -Infinity;
+
+        polygons.forEach((poly) =>
+            poly.forEach(([x, z]) => {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (z < minZ) minZ = z;
+                if (z > maxZ) maxZ = z;
+            })
+        );
+
+        return { minX, maxX, minZ, maxZ };
+    }
+
+    const bounds = getPolygonsBounds(polygons);
+    const width = bounds.maxX - bounds.minX;
+    const depth = bounds.maxZ - bounds.minZ;
+
+    // Adjust camera position to center of polygons
+    const cameraPosition: [number, number, number] = [
+        (bounds.minX + bounds.maxX) / 2,
+        Math.max(width, depth) * 1.5, // height based on largest dimension
+        (bounds.minZ + bounds.maxZ) / 2,
+    ];
 
 
 
@@ -281,7 +296,8 @@ export default function EarthquakeSim() {
                 <directionalLight castShadow position={[10, 20, 10]} intensity={1} />
                 <Stats />
                 <OrbitControls ref={orbitRef} makeDefault enablePan={true} />
-                <primitive object={new THREE.GridHelper(25, 25)} />
+                <primitive object={new THREE.GridHelper(Math.max(width, depth) + 2, Math.ceil(Math.max(width, depth)), "grey", "lightgrey")} position={[cameraPosition[0], 0, cameraPosition[2]]} />
+                
 
                 <Physics gravity={[0, -9.81, 0]}>
                     <Ground />
@@ -396,7 +412,12 @@ export default function EarthquakeSim() {
                 <div style={{ fontSize: 12, color: "#333" }}>
                     Upload a layout (JSON), set epicenter, then trigger.
                 </div>
-                <button onClick={saveMatrixToFile}>Save Matrix</button>
+                <button
+                    style={{ position: "absolute", top: 20, left: 20, zIndex: 10 }}
+                    onClick={() => savePolygons(polygons)}
+                >
+                    Save Damage Matrix
+                </button>
             </div>
         </div>
     );
